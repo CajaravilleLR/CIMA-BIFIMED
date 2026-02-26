@@ -81,5 +81,5 @@ git commit -m "Añade README de uso y despliegue"
 git push
 ```
 
-Si vas a hacerlo público, revisa que no haya datos sensibles en el repositorio.
+
 
