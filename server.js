@@ -9,9 +9,41 @@ const __dirname = path.dirname(__filename);
 const app = express();
 const PORT = process.env.PORT || 3000;
 const BIFIMED_URL = "https://www.sanidad.gob.es/profesionales/medicamentos.do";
+const CACHE_TTL_MS = {
+  bifimedByCn: 60 * 60 * 1000,
+  cimaPsumByCn: 15 * 60 * 1000
+};
+const cacheStore = new Map();
 
 app.use(express.json());
 app.use(express.static(path.join(__dirname, "public")));
+
+function getCache(key) {
+  const hit = cacheStore.get(key);
+  if (!hit) return null;
+  if (Date.now() > hit.expiresAt) {
+    cacheStore.delete(key);
+    return null;
+  }
+  return hit.value;
+}
+
+function setCache(key, value, ttlMs) {
+  cacheStore.set(key, {
+    value,
+    expiresAt: Date.now() + ttlMs
+  });
+}
+
+async function fetchWithTimeout(url, options = {}, timeoutMs = 8000) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    return await fetch(url, { ...options, signal: controller.signal });
+  } finally {
+    clearTimeout(timer);
+  }
+}
 
 function cleanText(s = "") {
   return String(s).replace(/\s+/g, " ").trim();
@@ -45,12 +77,12 @@ async function fetchBifimedHtml(params) {
     if (v !== undefined && v !== null && v !== "") url.searchParams.set(k, String(v));
   }
 
-  const response = await fetch(url, {
+  const response = await fetchWithTimeout(url, {
     headers: {
       "User-Agent": "BifimedConnector/1.0",
       Accept: "text/html,application/xhtml+xml"
     }
-  });
+  }, 9000);
 
   if (!response.ok) {
     throw new Error(`BIFIMED respondió HTTP ${response.status}`);
@@ -174,32 +206,44 @@ app.get("/api/cima/problemas-suministro", async (req, res) => {
   try {
     const cn = cleanText(req.query.cn);
     if (!cn) return res.status(400).json({ error: "Falta parámetro cn" });
-
-    const cimaMed = await fetch(`https://cima.aemps.es/cima/rest/medicamento?cn=${cn}`, {
-      headers: { Accept: "application/json" }
-    }).then((r) => (r.ok ? r.json() : null)).catch(() => null);
-
-    if (!cimaMed || !cimaMed.psum) {
-      return res.json({ tieneProblema: false, cn });
+    const cacheKey = `cima-psum:${cn}`;
+    const cached = getCache(cacheKey);
+    if (cached) {
+      res.set("Cache-Control", "public, max-age=60");
+      return res.json(cached);
     }
 
-    const psum = await fetch(`https://cima.aemps.es/cima/rest/psuministro/${encodeURIComponent(cn)}`, {
+    const cimaMed = await fetchWithTimeout(`https://cima.aemps.es/cima/rest/medicamento?cn=${encodeURIComponent(cn)}`, {
       headers: { Accept: "application/json" }
-    }).then((r) => (r.ok ? r.json() : null)).catch(() => null);
+    }, 7000).then((r) => (r.ok ? r.json() : null)).catch(() => null);
+
+    if (!cimaMed || !cimaMed.psum) {
+      const payload = { tieneProblema: false, cn };
+      setCache(cacheKey, payload, CACHE_TTL_MS.cimaPsumByCn);
+      res.set("Cache-Control", "public, max-age=60");
+      return res.json(payload);
+    }
+
+    const psum = await fetchWithTimeout(`https://cima.aemps.es/cima/rest/psuministro/${encodeURIComponent(cn)}`, {
+      headers: { Accept: "application/json" }
+    }, 7000).then((r) => (r.ok ? r.json() : null)).catch(() => null);
 
     const fila = psum?.resultados?.[0] || null;
     const fechaInicio = formatCimaDate(fila?.fini);
     const fechaFin = formatCimaDate(fila?.ffin);
     const informacion = cleanText(fila?.observ || "");
 
-    res.json({
+    const payload = {
       tieneProblema: true,
       cn,
       fechaInicio: fechaInicio || null,
       fechaFin: fechaFin || null,
       informacion: informacion || null,
       tipoProblemaSuministro: fila?.tipoProblemaSuministro ?? null
-    });
+    };
+    setCache(cacheKey, payload, CACHE_TTL_MS.cimaPsumByCn);
+    res.set("Cache-Control", "public, max-age=60");
+    res.json(payload);
   } catch (error) {
     res.status(502).json({ error: error.message });
   }
@@ -231,6 +275,12 @@ app.get("/api/bifimed/by-cn", async (req, res) => {
   try {
     const cn = cleanText(req.query.cn);
     if (!cn) return res.status(400).json({ error: "Falta parámetro cn" });
+    const cacheKey = `bifimed-bycn:${cn}`;
+    const cached = getCache(cacheKey);
+    if (cached) {
+      res.set("Cache-Control", "public, max-age=120");
+      return res.json(cached);
+    }
 
     const { html, url } = await fetchBifimedHtml({
       metodo: "buscarMedicamentos",
@@ -249,12 +299,12 @@ app.get("/api/bifimed/by-cn", async (req, res) => {
     }
 
     if (detalleUrl) {
-      const detailRes = await fetch(detalleUrl, {
+      const detailRes = await fetchWithTimeout(detalleUrl, {
         headers: {
           "User-Agent": "BifimedConnector/1.0",
           Accept: "text/html,application/xhtml+xml"
         }
-      });
+      }, 9000);
       if (detailRes.ok) {
         const detailHtml = await detailRes.text();
         indicaciones = parseBifimedIndicaciones(detailHtml);
@@ -262,7 +312,10 @@ app.get("/api/bifimed/by-cn", async (req, res) => {
     }
 
     const enriched = exact ? { ...exact, detalleUrl, indicaciones } : null;
-    res.json({ sourceUrl: url, cn, resultado: enriched });
+    const payload = { sourceUrl: url, cn, resultado: enriched };
+    setCache(cacheKey, payload, CACHE_TTL_MS.bifimedByCn);
+    res.set("Cache-Control", "public, max-age=120");
+    res.json(payload);
   } catch (error) {
     res.status(502).json({ error: error.message });
   }

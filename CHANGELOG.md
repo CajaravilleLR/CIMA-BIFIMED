@@ -44,4 +44,32 @@ Todos los cambios relevantes del proyecto se registran en este archivo.
 - Endpoint de verificación recomendado:
   - `/api/bifimed/by-cn?cn=712570`
 
+## 2026-03-13
+
+### Añadido
+
+- Indicador visual de desabastecimiento en el listado de resultados de CIMA:
+  - Badge `Problema de Suministro` en rojo cuando `psum = true`.
+- Nueva sección en ficha de medicamento (antes de BIFIMED):
+  - `Problemas de suministro`.
+  - Muestra fecha de inicio, fecha de fin y texto de recomendación cuando existen.
+- Nuevo endpoint backend local:
+  - `GET /api/cima/problemas-suministro?cn=...`
+  - Consulta CIMA y devuelve `fechaInicio`, `fechaFin`, `informacion`.
+- Nuevo endpoint serverless para Vercel:
+  - `api/cima/problemas-suministro.js`
+  - Mismo comportamiento que en local para mantener paridad entre entornos.
+
+### Cambiado
+
+- La obtención de datos de desabastecimiento pasó de parseo HTML a consumo directo de CIMA REST:
+  - `GET https://cima.aemps.es/cima/rest/psuministro/{cn}`
+- Formato de fechas normalizado a `dd/mm/yyyy`.
+- En la ficha se eliminó el enlace externo de derivación a CIMA, manteniendo solo información clínica relevante.
+
+### Corregido
+
+- Incidencia en Vercel donde no aparecían fechas de desabastecimiento por ausencia del endpoint `/api/cima/problemas-suministro` en entorno serverless.
+- Sincronización de comportamiento entre despliegue local (`server.js`) y despliegue Vercel (`api/*`).
+
 

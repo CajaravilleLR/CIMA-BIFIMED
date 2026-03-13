@@ -693,6 +693,11 @@
 <script>
 const CIMA_BASE = "https://cima.aemps.es/cima/rest";
 const BIFIMED_BASE = "/api/bifimed";
+const detailCache = {
+  bifimedByCn: new Map(),
+  bifimedByNombre: new Map(),
+  psumByCn: new Map()
+};
 
 async function cimaFetch(endpoint, params = {}) {
   const url = new URL(`${CIMA_BASE}${endpoint}`);
@@ -713,6 +718,50 @@ async function bifimedFetch(endpoint, params = {}) {
   const res = await fetch(url.toString(), { headers: { Accept: "application/json" } });
   if (!res.ok) throw new Error(`Error BIFIMED ${res.status}`);
   return res.json();
+}
+
+async function getBifimedDetailForMed(med, cn) {
+  if (cn) {
+    if (detailCache.bifimedByCn.has(cn)) return detailCache.bifimedByCn.get(cn);
+    try {
+      const b = await bifimedFetch("/by-cn", { cn });
+      const resultado = b.resultado || null;
+      detailCache.bifimedByCn.set(cn, resultado);
+      return resultado;
+    } catch (_err) {
+      detailCache.bifimedByCn.set(cn, null);
+      return null;
+    }
+  }
+  const nombre = (med?.nombre || "").trim().toLowerCase();
+  if (!nombre) return null;
+  if (detailCache.bifimedByNombre.has(nombre)) return detailCache.bifimedByNombre.get(nombre);
+  try {
+    const b = await bifimedFetch("/search", { nombre: med.nombre });
+    const resultado = b.resultados?.[0] || null;
+    detailCache.bifimedByNombre.set(nombre, resultado);
+    return resultado;
+  } catch (_err) {
+    detailCache.bifimedByNombre.set(nombre, null);
+    return null;
+  }
+}
+
+async function getProblemasSuministroByCn(cn) {
+  if (!cn) return null;
+  if (detailCache.psumByCn.has(cn)) return detailCache.psumByCn.get(cn);
+  try {
+    const res = await fetch(`${location.origin}/api/cima/problemas-suministro?cn=${encodeURIComponent(cn)}`, {
+      headers: { Accept: "application/json" }
+    });
+    const data = res.ok ? await res.json() : null;
+    const resultado = data?.tieneProblema ? data : null;
+    detailCache.psumByCn.set(cn, resultado);
+    return resultado;
+  } catch (_e) {
+    detailCache.psumByCn.set(cn, null);
+    return null;
+  }
 }
 
 function setupAutocomplete(wrapId, opts) {
@@ -1063,41 +1112,24 @@ async function verDetalle(nregistro) {
   try {
     const med = await cimaFetch("/medicamento", { nregistro });
     const cn = med.presentaciones?.find(p => p.comerc)?.cn || med.presentaciones?.[0]?.cn || "";
-    let bifimed = null;
-    let problemasSuministro = null;
-
-    try {
-      if (cn) {
-        const b = await bifimedFetch("/by-cn", { cn });
-        bifimed = b.resultado || null;
-      } else if (med.nombre) {
-        const b = await bifimedFetch("/search", { nombre: med.nombre });
-        bifimed = b.resultados?.[0] || null;
-      }
-    } catch (_errBifimed) {
-      bifimed = null;
-    }
-
-    if (med.psum && cn) {
-      try {
-        const res = await fetch(`${location.origin}/api/cima/problemas-suministro?cn=${encodeURIComponent(cn)}`, { headers: { Accept: "application/json" } });
-        if (res.ok) {
-          const data = await res.json();
-          if (data.tieneProblema) problemasSuministro = data;
-        }
-      } catch (_e) {
-        problemasSuministro = { tieneProblema: true, cn };
-      }
-    }
-
-    renderDetail(med, bifimed, problemasSuministro);
+    // Render inicial rápido con datos CIMA y carga progresiva.
+    renderDetail(med, null, null, { loadingBifimed: true, loadingPsum: Boolean(med.psum) });
     showSection("detail");
+
+    const [bifimed, problemasSuministro] = await Promise.all([
+      getBifimedDetailForMed(med, cn),
+      med.psum && cn ? getProblemasSuministroByCn(cn) : Promise.resolve(null)
+    ]);
+
+    renderDetail(med, bifimed, problemasSuministro, { loadingBifimed: false, loadingPsum: false });
   } catch (err) {
     showError(`No se pudo obtener el detalle: ${err.message}`);
   }
 }
 
-function renderDetail(med, bifimed = null, problemasSuministro = null) {
+function renderDetail(med, bifimed = null, problemasSuministro = null, opts = {}) {
+  const loadingBifimed = Boolean(opts.loadingBifimed);
+  const loadingPsum = Boolean(opts.loadingPsum);
   const foto = med.fotos?.length ? `<img src="${med.fotos[0].url}" alt="Foto" class="foto-med">` : "";
   const estado = med.estado?.aut ? "Autorizado" : (med.estado?.susp ? "Suspendido" : (med.estado?.rev ? "Revocado" : "No autorizado"));
 
@@ -1147,10 +1179,14 @@ function renderDetail(med, bifimed = null, problemasSuministro = null) {
   const psumSection = med.psum ? `
     <div class="detail-section problemas-suministro">
       <h3>Problemas de suministro</h3>
-      <p>Este medicamento presenta <strong>problemas de suministro</strong>.</p>
-      ${problemasSuministro?.fechaInicio ? `<p><strong>Fecha de inicio:</strong> ${problemasSuministro.fechaInicio}</p>` : ""}
-      ${problemasSuministro?.fechaFin ? `<p><strong>Fecha de fin:</strong> ${problemasSuministro.fechaFin}</p>` : ""}
-      <p><strong>Recomendación:</strong> ${textoPsum}</p>
+      ${loadingPsum ? `
+        <p>Cargando detalle de desabastecimiento...</p>
+      ` : `
+        <p>Este medicamento presenta <strong>problemas de suministro</strong>.</p>
+        ${problemasSuministro?.fechaInicio ? `<p><strong>Fecha de inicio:</strong> ${problemasSuministro.fechaInicio}</p>` : ""}
+        ${problemasSuministro?.fechaFin ? `<p><strong>Fecha de fin:</strong> ${problemasSuministro.fechaFin}</p>` : ""}
+        <p><strong>Recomendación:</strong> ${textoPsum}</p>
+      `}
     </div>
   ` : "";
 
@@ -1177,7 +1213,9 @@ function renderDetail(med, bifimed = null, problemasSuministro = null) {
 
     <div class="detail-section">
       <h3>Financiación BIFIMED</h3>
-      ${bifimed ? `
+      ${loadingBifimed ? `
+        <p>Cargando información de financiación e indicaciones...</p>
+      ` : bifimed ? `
         <p><strong>Situación:</strong> ${bifimed.financiacion?.label || bifimed.financiacionTexto || "-"}</p>
         <p><strong>CN:</strong> ${bifimed.cn || "-"}</p>
         ${bifimed.principioActivo ? `<p><strong>Principio activo (BIFIMED):</strong> ${bifimed.principioActivo}</p>` : ""}
