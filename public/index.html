@@ -449,6 +449,14 @@
       vertical-align: top;
     }
 
+    .detail-section.problemas-suministro {
+      border-left: 4px solid var(--rojo);
+      background: #fef5f5;
+      padding-left: 1rem;
+    }
+
+    .detail-section.problemas-suministro h3 { color: var(--rojo); }
+
     .loading {
       text-align: center;
       padding: 2rem;
@@ -1031,6 +1039,7 @@ function renderList(data) {
           ${med.generico ? '<span class="badge badge-blue">Genérico</span>' : ""}
           ${med.huerfano ? '<span class="badge badge-blue">Huérfano</span>' : ""}
           ${med.biosimilar ? '<span class="badge badge-blue">Biosimilar</span>' : ""}
+          ${med.psum ? '<span class="badge badge-red">Problema de Suministro</span>' : ""}
         </div>
       </div>
     `;
@@ -1055,6 +1064,7 @@ async function verDetalle(nregistro) {
     const med = await cimaFetch("/medicamento", { nregistro });
     const cn = med.presentaciones?.find(p => p.comerc)?.cn || med.presentaciones?.[0]?.cn || "";
     let bifimed = null;
+    let problemasSuministro = null;
 
     try {
       if (cn) {
@@ -1068,14 +1078,26 @@ async function verDetalle(nregistro) {
       bifimed = null;
     }
 
-    renderDetail(med, bifimed);
+    if (med.psum && cn) {
+      try {
+        const res = await fetch(`${location.origin}/api/cima/problemas-suministro?cn=${encodeURIComponent(cn)}`, { headers: { Accept: "application/json" } });
+        if (res.ok) {
+          const data = await res.json();
+          if (data.tieneProblema) problemasSuministro = data;
+        }
+      } catch (_e) {
+        problemasSuministro = { tieneProblema: true, cn };
+      }
+    }
+
+    renderDetail(med, bifimed, problemasSuministro);
     showSection("detail");
   } catch (err) {
     showError(`No se pudo obtener el detalle: ${err.message}`);
   }
 }
 
-function renderDetail(med, bifimed = null) {
+function renderDetail(med, bifimed = null, problemasSuministro = null) {
   const foto = med.fotos?.length ? `<img src="${med.fotos[0].url}" alt="Foto" class="foto-med">` : "";
   const estado = med.estado?.aut ? "Autorizado" : (med.estado?.susp ? "Suspendido" : (med.estado?.rev ? "Revocado" : "No autorizado"));
 
@@ -1121,6 +1143,17 @@ function renderDetail(med, bifimed = null) {
     `
     : "<p>No hay indicaciones disponibles en BIFIMED para este CN.</p>";
 
+  const textoPsum = problemasSuministro?.informacion || "El médico prescriptor deberá determinar la posibilidad de utilizar otros tratamientos comercializados.";
+  const psumSection = med.psum ? `
+    <div class="detail-section problemas-suministro">
+      <h3>Problemas de suministro</h3>
+      <p>Este medicamento presenta <strong>problemas de suministro</strong>.</p>
+      ${problemasSuministro?.fechaInicio ? `<p><strong>Fecha de inicio:</strong> ${problemasSuministro.fechaInicio}</p>` : ""}
+      ${problemasSuministro?.fechaFin ? `<p><strong>Fecha de fin:</strong> ${problemasSuministro.fechaFin}</p>` : ""}
+      <p><strong>Recomendación:</strong> ${textoPsum}</p>
+    </div>
+  ` : "";
+
   detailContent.innerHTML = `
     ${foto}
     <h2>${med.nombre || "Sin nombre"}</h2>
@@ -1139,6 +1172,8 @@ function renderDetail(med, bifimed = null) {
       <dt>Huérfano</dt><dd>${med.huerfano ? "Sí" : "No"}</dd>
       <dt>Biosimilar</dt><dd>${med.biosimilar ? "Sí" : "No"}</dd>
     </dl>
+
+    ${psumSection}
 
     <div class="detail-section">
       <h3>Financiación BIFIMED</h3>

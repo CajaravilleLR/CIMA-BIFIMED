@@ -160,6 +160,51 @@ function parseBifimedIndicaciones(html) {
   return rows;
 }
 
+function formatCimaDate(ms) {
+  if (!ms && ms !== 0) return null;
+  const d = new Date(Number(ms));
+  if (Number.isNaN(d.getTime())) return null;
+  const dd = String(d.getDate()).padStart(2, "0");
+  const mm = String(d.getMonth() + 1).padStart(2, "0");
+  const yyyy = d.getFullYear();
+  return `${dd}/${mm}/${yyyy}`;
+}
+
+app.get("/api/cima/problemas-suministro", async (req, res) => {
+  try {
+    const cn = cleanText(req.query.cn);
+    if (!cn) return res.status(400).json({ error: "Falta parámetro cn" });
+
+    const cimaMed = await fetch(`https://cima.aemps.es/cima/rest/medicamento?cn=${cn}`, {
+      headers: { Accept: "application/json" }
+    }).then((r) => (r.ok ? r.json() : null)).catch(() => null);
+
+    if (!cimaMed || !cimaMed.psum) {
+      return res.json({ tieneProblema: false, cn });
+    }
+
+    const psum = await fetch(`https://cima.aemps.es/cima/rest/psuministro/${encodeURIComponent(cn)}`, {
+      headers: { Accept: "application/json" }
+    }).then((r) => (r.ok ? r.json() : null)).catch(() => null);
+
+    const fila = psum?.resultados?.[0] || null;
+    const fechaInicio = formatCimaDate(fila?.fini);
+    const fechaFin = formatCimaDate(fila?.ffin);
+    const informacion = cleanText(fila?.observ || "");
+
+    res.json({
+      tieneProblema: true,
+      cn,
+      fechaInicio: fechaInicio || null,
+      fechaFin: fechaFin || null,
+      informacion: informacion || null,
+      tipoProblemaSuministro: fila?.tipoProblemaSuministro ?? null
+    });
+  } catch (error) {
+    res.status(502).json({ error: error.message });
+  }
+});
+
 app.get("/api/bifimed/search", async (req, res) => {
   try {
     const { nombre = "", priact_uno = "", financiado = "", page = "1" } = req.query;
