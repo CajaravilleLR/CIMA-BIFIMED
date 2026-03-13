@@ -72,4 +72,17 @@ Todos los cambios relevantes del proyecto se registran en este archivo.
 - Incidencia en Vercel donde no aparecían fechas de desabastecimiento por ausencia del endpoint `/api/cima/problemas-suministro` en entorno serverless.
 - Sincronización de comportamiento entre despliegue local (`server.js`) y despliegue Vercel (`api/*`).
 
+### Rendimiento
+
+- Optimización de carga de ficha en frontend (`public/index.html`):
+  - Render inicial rápido con datos CIMA.
+  - Carga progresiva y en paralelo de BIFIMED y problemas de suministro.
+  - Caché en memoria por sesión para consultas repetidas por CN/nombre.
+- Optimización backend local (`server.js`):
+  - Caché en memoria por CN para:
+    - `GET /api/bifimed/by-cn`
+    - `GET /api/cima/problemas-suministro`
+  - Timeouts en llamadas externas para evitar bloqueos largos.
+  - Cabeceras `Cache-Control` para favorecer respuestas rápidas en repetición.
+
 
